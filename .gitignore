@@ -1,0 +1,7 @@
+artifacts/
+__pycache__/
+*.npy
+*.npz
+*.txt
+*.pte
+.DS_Store
