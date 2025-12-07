@@ -1,4 +1,4 @@
-# Qwen Export Utilities
+# Qwen Export On-device Utilities
 
 This workspace contains a collection of scripts I use to export, validate, and debug the ExecuTorch versions of Qwen2.5-Omni. To keep things tidy the repo is now split into two top-level trees:
 
