@@ -5,3 +5,4 @@ __pycache__/
 *.txt
 *.pte
 .DS_Store
+audio_sample1.wav
