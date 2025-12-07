@@ -54,7 +54,7 @@ Supporting logs such as `pipeline_output.txt`, `layer_diff_fp32.txt`, and `run_p
 2. **Use the right runner for the job** – stick to `tests/integration/run_full_pipeline.py` for everyday inference. Switch to `tests/integration/full_pipeline_debug.py` only when you need to dump/replay every tensor (see example below).
 3. **HF reference options** – most runners accept flags such as `--hf_compare`, `--hf_tokens`, `--hf_dump_dir`, and `--hf_force_tokens`. Check each script’s `--help` for details; all paths are relative to the repo root.
 
-### Example: full pipeline debug command
+### Currently: full pipeline debug
 
 When chasing ExecuTorch vs HF divergences we run the heavy debug driver, which currently *requires* a matching prefill/decode export pair (the stock fp32 pair in this repo does **not** match—re-export before running). Typical invocation:
 
@@ -75,4 +75,3 @@ python tests/integration/full_pipeline_debug.py \
 
 It dumps every artifact under `artifacts/full_debug/` (prompt ids, mel, audio_ctx, all KV tensors/kv_vis, logits, generated tokens) and replays the exact state through HF, printing MAE/cosine per step. **Important:** the bundled `llm_prefill_tokens_64p_750a_fp32.pte` / `llm_decode_cacheT1024_fp32.pte` pair is inconsistent; until we re-export fp32, use the fp16 pair or regenerate matching fp32 PTEs via `src/decode/export_prefill_decode_32.py`.
 
-Feel free to extend this README as new utilities appear. The goal is to keep export code under `src/`, validation scripts under `tests/`, and treat `.npy`/`.pte`/log outputs as build artifacts (ignored via `.gitignore`). Happy debugging!
