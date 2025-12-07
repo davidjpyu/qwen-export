@@ -75,3 +75,11 @@ python tests/integration/full_pipeline_debug.py \
 
 It dumps every artifact under `artifacts/full_debug/` (prompt ids, mel, audio_ctx, all KV tensors/kv_vis, logits, generated tokens) and replays the exact state through HF, printing MAE/cosine per step. **Important:** the bundled `llm_prefill_tokens_64p_750a_fp32.pte` / `llm_decode_cacheT1024_fp32.pte` pair is inconsistent; until we re-export fp32, use the fp16 pair or regenerate matching fp32 PTEs via `src/decode/export_prefill_decode_32.py`.
 
+### Current verification status
+
+To narrow down where ExecuTorch and HF diverge we’ve been validating each hop:
+
+1. **Audio front-end** – `tests/audio_tower/run_pte_audio_tower.py` plus `tests/preprocessor/before_LLM.py` confirm Whisper→audio tower outputs and prompt tokens match HF (MAE ≈ 1e‑5, cosine ≈ 1). Audio embeddings and tokenization are not the culprit.
+2. **Prefill graph** – `tests/prefill/layer_diff*.py` shows the Prefill PTE (fp16/fp32) matches the HF backbone layer-by-layer on identical inputs.
+3. **Decode kernels** – `tests/prefill/run_pte_prefill_decode.py` locks both runtimes to the same forced tokens; decode logits differ by MAE ≈ 1e‑5, so the kernels themselves are correct.
+4. **Real pipeline state** – `tests/integration/full_pipeline_debug.py` is designed to capture the actual ExecuTorch state (prompt ids, mel/audio_ctx, KV, kv_vis, sampled tokens) and replay it through HF. The outstanding issue is that our stock fp32 prefill/decode exports don’t match, so decode fails before we can compare step1—re-exporting fp32 PTEs is next on the todo list.
