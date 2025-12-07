@@ -484,8 +484,8 @@ def main():
         print(f"ET-Metal(exec) vs ET-CPU(exec)        : MAE={mae:.3e}  MSE={mse:.3e}  Cos={cos:.6f}")
 
     print("\nInterpretation:")
-    print("  • If ET-Metal aligns with HF while ET-CPU does not, the drift is coming from the CPU kernels.")
-    print("  • If both ET versions disagree with HF, investigate the export graph itself (mask/cache logic).")
+    print("  - If ET-Metal aligns with HF while ET-CPU does not, the drift is coming from the CPU kernels.")
+    print("  - If both ET versions disagree with HF, investigate the export graph itself (mask/cache logic).")
 
 
 if __name__ == "__main__":

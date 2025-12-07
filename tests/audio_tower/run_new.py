@@ -278,8 +278,8 @@ def main():
         print(f"FullModel(exec) vs FullModel(ref): MAE={mae:.3e}  MSE={mse:.3e}  Cos={cos:.6f}")
 
     print("\nInterpretation:")
-    print("  • If HF(exec) vs HF(ref) already shows a large gap, the audio tower export is the source.")
-    print("  • If TorchPrefill (and FullModel) align with HF but ET does not, the issue lies in the ET export/lowering.")
+    print("  - If HF(exec) vs HF(ref) already shows a large gap, the audio tower export is the source.")
+    print("  - If TorchPrefill (and FullModel) align with HF but ET does not, the issue lies in the ET export/lowering.")
 
 
 if __name__ == "__main__":

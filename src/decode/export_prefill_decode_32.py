@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Qwen2.5-Omni 3B -> ExecuTorch (text-only) prefill + decode 导出（FP32, 静态KV容量, 显式kv_vis + cache_position）
-输出：
+Qwen2.5-Omni 3B -> ExecuTorch (text-only) prefill + decode export
+(FP32, static KV capacity, explicit kv_vis + cache_position).
+Outputs:
   - llm_prefill_tokens_64p_750a_fp32.pte
   - llm_decode_cacheT{cache_T}_fp32.pte
 """
@@ -102,9 +103,9 @@ class DecodeWrapper(nn.Module):
     """
     forward(token_id, past_seen, kv_vis, *kv_in)
       - token_id: [1] int32/int64
-      - past_seen: [1] int64  （真实可见历史长度 T_visible）
+      - past_seen: [1] int64 (actual visible history length T_visible)
       - kv_vis: [1, cache_T+1] bool
-      - *kv_in: 每层 KV [B, H, cache_T, Dh]
+      - *kv_in: per-layer KV [B, H, cache_T, Dh]
     """
     def __init__(self, lm_backbone, lm_head):
         super().__init__(); self.backbone=lm_backbone; self.lm_head=lm_head
@@ -120,7 +121,7 @@ class DecodeWrapper(nn.Module):
             input_ids=token_id.view(1,1).to(torch.long),
             past_key_values=cache,
             attention_mask=kv_vis.to(torch.bool),
-            cache_position=past_seen.to(torch.long),   # ★ 告诉骨干：当前位置 = 真实历史长度
+            cache_position=past_seen.to(torch.long),   # current position equals the true visible length
             use_cache=True,
         )
         logits = self.lm_head(out.last_hidden_state[:, -1, :]).squeeze(0)

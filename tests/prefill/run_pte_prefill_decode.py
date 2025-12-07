@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-校验 ExecuTorch 导出的 Qwen2.5-Omni 文本 LLM (prefill + decode) 的步进一致性。
-关键修复：HF 端从 ET 的 KV 起步，消除“起点不同”造成的级联误差。
+Validate ExecuTorch-exported Qwen2.5-Omni text LLM (prefill + decode) step consistency.
+The key fix is rebuilding the HF cache from ET's KV tensors so both sides share the same starting state.
 
-默认：
+Defaults:
   --prefill_pte  llm_prefill_tokens_64p_750a_fp16.pte
   --decode_pte   llm_decode_cacheT1024_fp16.pte
   --audio_ctx    artifacts/golden_30s/audio_emb_exec.npy
@@ -218,25 +218,25 @@ def main():
     kv_vis = build_kv_vis_for_decode(T_visible, args.kv_cap)
     print(f"[ET] prefill KV T0={T0} -> padded to kv_cap={args.kv_cap}; kv_vis shape={tuple(kv_vis.shape)}, sum={int(kv_vis.sum())}")
 
-    # ---- HF init from ET KV (消除起点差异) ----
-    #   1) 去除左 pad，仅保留右侧 T_visible
-    #   2) 构造 HF DynamicCache
+    # ---- HF init from ET KV (eliminate starting-state mismatch) ----
+    #   1) Remove left padding and keep the rightmost T_visible tokens
+    #   2) Build an HF DynamicCache from those tensors
     hf_cache_from_et = DynamicCache.from_legacy_cache(
         unflatten_to_legacy(crop_kv_right(et_kv_flat, T_visible))
     )
 
-    # HF 模块
+    # HF modules
     lm_backbone, lm_head, embed = load_text_only_fp16(args.model_id, args.revision)
     if dtype == torch.float32:
         lm_backbone = lm_backbone.float()
         lm_head = lm_head.float()
         embed = embed.float()
 
-    # 为了让 “step 0” 输入严格一致：两边都用 ET 的 next token
+    # Force both sides to consume the same next token at step 0
     cur_et = torch.argmax(et_logits0).view(1).to(torch.int32)
-    cur_hf = cur_et.view(1, 1).to(torch.long)  # 同一个 token
+    cur_hf = cur_et.view(1, 1).to(torch.long)
 
-    # 计算 HF 的 prefill 对比仅用于 sanity（非必须）
+    # Comparing HF prefill logits is optional but useful for sanity
     with torch.no_grad():
         x = embed(input_ids.to(torch.long))
         hidden0 = torch.cat([x, audio_ctx.unsqueeze(0)], dim=1)
@@ -245,7 +245,7 @@ def main():
     np.save("hf_logits0.npy", hf_logits0_ref.cpu().numpy())
 
     m0 = compare_logits(et_logits0, hf_logits0_ref, topk=5)
-    print(f"[COMPARE prefill] MAE={m0['mae']:.3e}  MSE={m0['mse']:.3e}  Rel={m0['rel']:.3e}  Cos={m0['cos']:.6f}  Top1Match={bool(m0['top1_match'])}  Top5∩={m0['top5_overlap']}")
+    print(f"[COMPARE prefill] MAE={m0['mae']:.3e}  MSE={m0['mse']:.3e}  Rel={m0['rel']:.3e}  Cos={m0['cos']:.6f}  Top1Match={bool(m0['top1_match'])}  Top5Overlap={m0['top5_overlap']}")
 
     diff = (
          - hf_logits0_ref).abs()
@@ -253,7 +253,7 @@ def main():
     print(f"[COMPARE prefill] top diff idx: {top_diff_idx.tolist()}")
     print(f"[COMPARE prefill] top diff val: {top_diff_val.tolist()}")
 
-    # ---- decode loop（两边同一 KV 起点、同一 token）----
+    # ---- decode loop (shared KV start + token sequence) ----
     cur_T = T_visible
     for step in range(args.steps):
         # ET decode
@@ -263,7 +263,7 @@ def main():
         np.save(f"et_logits_step{step+1}.npy", et_logit.cpu().numpy())
         et_kv_flat = [t.contiguous() for t in et_out[1:]] # Slice to capacity is now handled by the exported model
 
-        # HF decode（从 ET KV 起步）
+        # HF decode using the ET-derived cache
         with torch.no_grad():
             # CRITICAL FIX: Re-create the HF cache from the ET cache *at each step*.
             # This ensures both models see the exact same left-padded KV cache layout.
@@ -283,13 +283,13 @@ def main():
         np.save(f"hf_logits_step{step+1}.npy", hf_logit.cpu().numpy())
 
         m = compare_logits(et_logit, hf_logit, topk=5)
-        print(f"[step {step}] MAE={m['mae']:.3e}  Cos={m['cos']:.6f}  Top1Match={bool(m['top1_match'])}  Top5∩={m['top5_overlap']}")
+        print(f"[step {step}] MAE={m['mae']:.3e}  Cos={m['cos']:.6f}  Top1Match={bool(m['top1_match'])}  Top5Overlap={m['top5_overlap']}")
 
-        # 下一 token（统一用 ET 的 argmax，避免分叉）
+        # Always use the ExecuTorch argmax token to prevent divergence
         cur_et = torch.argmax(et_logit).view(1).to(torch.int32)
         cur_hf = cur_et.view(1,1).to(torch.long)
 
-        # 长度 & 可见度维护
+        # Maintain lengths and visibility bookkeeping
         if cur_T < args.kv_cap:
             cur_T += 1
         kv_vis = build_kv_vis_for_decode(cur_T, args.kv_cap)

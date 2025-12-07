@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-make_golden_audio_tower.py
-生成 Audio Tower 的黄金样本，并做 ExecuTorch vs HF 数值对齐。
+Generate golden audio-tower data and compare ExecuTorch vs HF numerics.
 
-产物（默认写入 artifacts/golden_30s/）：
+Artifacts (written to `artifacts/golden_30s/` by default):
 - mel.npy                : float32 [1,128,3000]
 - audio_emb_exec.npy     : float32 [N_chunks, D]
 - audio_emb_ref.npy      : float32 [N_chunks, D]
 - feature_lens.npy       : int64   [1]
 - aftercnn_lens.npy      : int64   [N_chunks]
-- meta.json              : 配置、容差、误差统计等
+- meta.json              : configuration, tolerances, error metrics
 """
 import os
 import math
@@ -24,24 +23,24 @@ import torch.nn.functional as F
 from transformers import AutoConfig, Qwen2_5OmniForConditionalGeneration
 
 # -----------------------------
-# 配置（按需修改）
+# Configuration
 # -----------------------------
 MODEL_ID = "Qwen/Qwen2.5-Omni-3B"
 DTYPE = torch.float32
 SR = 16000
-DURATION_S = 30                  # 30s -> T = 3000（与你的静态 audio_tower 对齐）
+DURATION_S = 30                  # 30s -> T = 3000 (matches the static audio tower)
 PROC_PTE = "whisper_preprocess.pte"
 ENC_PTE  = "qwen_audio_tower_30s_static.pte"
 
 # -----------------------------
-# 工具：按 HF 实现计算 aftercnn_lens
+# Helper: reproduce HF after-cnn lengths
 # -----------------------------
 def compute_aftercnn_lens_from_T(T: int, n_window: int) -> torch.LongTensor:
     """
-    与 Qwen2.5-Omni audio_tower 内部的分块保持一致：
+    Mirror the chunking logic inside Qwen2.5-Omni's audio tower:
     - base = 2 * n_window
-    - 把时间维 T 切成若干 base 的块（最后一块可短）
-    - 每块长度 L -> after = (L - 1) // 2 + 1
+    - split time dimension T into base-sized chunks (last chunk may be shorter)
+    - each chunk L -> after = (L - 1) // 2 + 1
     """
     base = 2 * n_window
     chunk_num = math.ceil(T / base)
@@ -53,15 +52,15 @@ def compute_aftercnn_lens_from_T(T: int, n_window: int) -> torch.LongTensor:
     return torch.tensor(aftercnn_lens, dtype=torch.long)
 
 # -----------------------------
-# ExecuTorch 运行工具
+# ExecuTorch helpers
 # -----------------------------
 def run_executorch(proc_pte: str, enc_pte: str, wave_1d: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    输入:
+    Args:
         wave_1d: torch.float32 [SR*DURATION_S]
-    输出:
-        mel:   torch.float32 [1,128,3000]
-        y_exec:torch.float32 [N_chunks, D]
+    Returns:
+        mel: torch.float32 [1,128,3000]
+        y_exec: torch.float32 [N_chunks, D]
     """
     from executorch.runtime import Runtime
     rt = Runtime.get()
@@ -72,7 +71,7 @@ def run_executorch(proc_pte: str, enc_pte: str, wave_1d: torch.Tensor) -> Tuple[
     mel_list = proc_fwd.execute([wave_1d])
     mel = mel_list[0]
     if not isinstance(mel, torch.Tensor):
-        # 保险：某些版本可能返回 ET 自己的张量
+        # Some ExecuTorch builds return custom tensor types; normalize to torch.Tensor
         try:
             mel = mel.to_torch()
         except Exception:
@@ -90,31 +89,31 @@ def run_executorch(proc_pte: str, enc_pte: str, wave_1d: torch.Tensor) -> Tuple[
         except Exception:
             y_exec = torch.tensor(y_exec)
 
-    # 统一类型与内存
+    # Normalize dtype/layout
     mel   = mel.to(torch.float32).contiguous()
     y_exec = y_exec.to(torch.float32).contiguous()
     return mel, y_exec
 
 # -----------------------------
-# HF 参考前向（音频塔）
+# HF reference forward (audio tower)
 # -----------------------------
 def run_hf_audio_tower(model_id: str, revision: str, dtype: torch.dtype,
                        feats_CT: torch.Tensor, T: int) -> Tuple[torch.Tensor, torch.LongTensor, torch.LongTensor]:
     """
-    输入:
+    Args:
         feats_CT: torch.float32 [128, T]
         T: int
-    返回:
-        y_ref:           torch.float32 [N_chunks, D]
-        feature_lens:    torch.int64   [1]
-        aftercnn_lens:   torch.int64   [N_chunks]
+    Returns:
+        y_ref: torch.float32 [N_chunks, D]
+        feature_lens: torch.int64 [1]
+        aftercnn_lens: torch.int64 [N_chunks]
     """
     cfg = AutoConfig.from_pretrained(model_id, trust_remote_code=True, revision=revision)
     omni = Qwen2_5OmniForConditionalGeneration.from_pretrained(
         model_id, config=cfg, trust_remote_code=True, dtype=dtype, device_map=None, revision=revision
     ).eval()
 
-    # 兼容不同权重结构：优先 thinker.audio_tower，否则 model.audio_tower
+    # Handle different weight layouts (prefer thinker.audio_tower if present)
     enc = getattr(getattr(omni, "thinker", getattr(omni, "model", None)), "audio_tower").eval()
 
     feature_lens = torch.tensor([T], dtype=torch.long)
@@ -131,22 +130,22 @@ def run_hf_audio_tower(model_id: str, revision: str, dtype: torch.dtype,
     return y_ref, feature_lens, aftercnn_lens
 
 # -----------------------------
-# 音频准备
+# Audio preparation
 # -----------------------------
 def make_wave(args) -> torch.Tensor:
     """
-    生成/读取 16kHz 单声道 30s 波形，float32 [SR*DURATION_S]
+    Generate or load a 16 kHz mono 30 s waveform as float32 [SR * DURATION_S].
     """
     need = SR * DURATION_S
     if args.wav is not None:
         try:
             import soundfile as sf
         except Exception as e:
-            raise RuntimeError("需要 soundfile 读取 wav：pip install soundfile") from e
+            raise RuntimeError("Please install soundfile to read wav inputs (pip install soundfile)") from e
         wave_np, sr = sf.read(args.wav, dtype="float32", always_2d=False)
-        assert sr == SR, f"期望 SR={SR}, 实际 {sr}"
+        assert sr == SR, f"Expected SR={SR}, got {sr}"
         if wave_np.ndim == 2:
-            # 简单下混
+            # simple downmix to mono
             wave_np = wave_np.mean(axis=1).astype(np.float32)
         if len(wave_np) >= need:
             wave_np = wave_np[:need]
@@ -161,11 +160,11 @@ def make_wave(args) -> torch.Tensor:
         return torch.randn(need, dtype=torch.float32)
 
 # -----------------------------
-# 误差评估
+# Error metrics
 # -----------------------------
 def compare_and_print(y_exec: torch.Tensor, y_ref: torch.Tensor):
     assert y_exec.shape == y_ref.shape, \
-        f"形状不一致：ExecuTorch {tuple(y_exec.shape)} vs HF {tuple(y_ref.shape)}"
+        f"Shape mismatch: ExecuTorch {tuple(y_exec.shape)} vs HF {tuple(y_ref.shape)}"
 
     diff = (y_exec - y_ref)
     mae = diff.abs().mean().item()
@@ -178,7 +177,7 @@ def compare_and_print(y_exec: torch.Tensor, y_ref: torch.Tensor):
     cos_min  = cos.min().item()
     cos_p01  = cos.kthvalue(max(1, int(0.01 * cos.numel()))).values.item() if cos.numel() > 10 else cos_min
 
-    print("\n=== ExecuTorch vs HF : 数值对比 ===")
+    print("\n=== ExecuTorch vs HF : numeric comparison ===")
     print(f"MAE               : {mae:.6e}")
     print(f"MSE               : {mse:.6e}")
     print(f"Max |diff|        : {max_abs:.6e}")
@@ -193,41 +192,41 @@ def compare_and_print(y_exec: torch.Tensor, y_ref: torch.Tensor):
     }
 
 # -----------------------------
-# 主流程
+# Main entry point
 # -----------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--wav", type=str, default=None, help="可选：真实 wav（16kHz 单声道/双声道均可）")
-    parser.add_argument("--silence", action="store_true", help="使用静音样本")
+    parser.add_argument("--wav", type=str, default=None, help="Optional: real WAV (16 kHz mono or stereo).")
+    parser.add_argument("--silence", action="store_true", help="Use a 30 s zero waveform instead of audio/random.")
     parser.add_argument("--outdir", type=str, default="artifacts/golden_30s")
-    parser.add_argument("--revision", type=str, default="main", help="HF 模型 revision，建议固定具体 commit")
-    parser.add_argument("--expect_T", type=int, default=3000, help="静态 audio_tower 期望 T（默认 3000）")
+    parser.add_argument("--revision", type=str, default="main", help="HF revision to load; pin a commit for reproducibility.")
+    parser.add_argument("--expect_T", type=int, default=3000, help="Expected static audio_tower T (default 3000).")
     parser.add_argument("--proc_pte", type=str, default=PROC_PTE)
     parser.add_argument("--enc_pte",  type=str, default=ENC_PTE)
     args = parser.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
 
-    # 1) 准备波形
+    # 1) Prepare waveform
     wave = make_wave(args)
 
-    # 2) ExecuTorch 前向：mel 与 audio_tower
+    # 2) ExecuTorch forward (whisper preprocess + audio tower)
     mel, y_exec = run_executorch(args.proc_pte, args.enc_pte, wave)
     print("[ExecuTorch] mel.shape:", tuple(mel.shape))
-    assert mel.dim() == 3 and mel.shape[1] == 128, "梅尔通道维应为 128"
+    assert mel.dim() == 3 and mel.shape[1] == 128, "Mel channel dimension must be 128."
     T = int(mel.shape[2])
     if args.expect_T is not None:
-        assert T == args.expect_T, f"T={T} 与静态 audio_tower 的 {args.expect_T} 不一致"
+        assert T == args.expect_T, f"T={T} does not match static audio_tower T={args.expect_T}"
 
     print("[ExecuTorch] audio_tower out:", tuple(y_exec.shape))
 
-    # 3) HF 参考前向（音频塔）
+    # 3) HF reference forward
     y_ref, feature_lens, aftercnn_lens = run_hf_audio_tower(
         MODEL_ID, args.revision, DTYPE, mel.squeeze(0), T
     )
     print("[HF] audio_tower out:", tuple(y_ref.shape))
 
-    # 4) 数值对齐
+    # 4) Metric comparison
     metrics = compare_and_print(y_exec, y_ref)
 
     tolerances = {
@@ -238,9 +237,9 @@ def main():
     ok = (metrics["mae"] < tolerances["mae"]) and \
          (metrics["max_abs"] < tolerances["max_abs"]) and \
          (metrics["cos_mean"] > tolerances["cos_mean"])
-    print("\nResult:", "✅ PASS" if ok else "⚠️  CHECK RESULTS")
+    print("\nResult:", "PASS" if ok else "CHECK RESULTS")
 
-    # 5) 落盘
+    # 5) Persist artifacts
     np.save(os.path.join(args.outdir, "mel.npy"), mel.cpu().numpy())
     np.save(os.path.join(args.outdir, "audio_emb_exec.npy"), y_exec.cpu().numpy())
     np.save(os.path.join(args.outdir, "audio_emb_ref.npy"), y_ref.cpu().numpy())

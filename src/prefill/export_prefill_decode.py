@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Qwen2.5-Omni 3B -> ExecuTorch (text-only) prefill + decode 导出（FP16, 静态KV容量, 显式kv_vis + cache_position）
-输出：
+Qwen2.5-Omni 3B -> ExecuTorch (text-only) prefill + decode export
+(FP16, static KV capacity, explicit kv_vis + cache_position).
+Outputs:
   - llm_prefill_tokens_64p_750a_fp16.pte
   - llm_decode_cacheT{cache_T}_fp16.pte
 """
@@ -101,9 +102,9 @@ class DecodeWrapper(nn.Module):
     """
     forward(token_id, past_seen, kv_vis, *kv_in)
       - token_id: [1] int32/int64
-      - past_seen: [1] int64  （真实可见历史长度 T_visible）
+      - past_seen: [1] int64  (actual visible history length T_visible)
       - kv_vis: [1, cache_T+1] bool
-      - *kv_in: 每层 KV [B, H, cache_T, Dh]
+      - *kv_in: KV tensors per layer [B, H, cache_T, Dh]
     """
     def __init__(self, lm_backbone, lm_head):
         super().__init__(); self.backbone=lm_backbone; self.lm_head=lm_head
@@ -119,7 +120,7 @@ class DecodeWrapper(nn.Module):
             input_ids=token_id.view(1,1).to(torch.long),
             past_key_values=cache,
             attention_mask=kv_vis.to(torch.bool),
-            cache_position=past_seen.to(torch.long),   # ★ 告诉骨干：当前位置 = 真实历史长度
+            cache_position=past_seen.to(torch.long),   # current position equals the true visible length
             use_cache=True,
         )
         logits = self.lm_head(out.last_hidden_state[:, -1, :]).squeeze(0)
@@ -176,7 +177,7 @@ def main():
     kv_examples = build_fixed_capacity_kv_examples(prefill, cache_T=args.cache_T)
     decode = DecodeWrapper(lm_backbone,lm_head).eval()
     token_ex  = torch.tensor([1], dtype=torch.int32)
-    past_ex   = torch.tensor([0], dtype=torch.int64)                 # 占位
+    past_ex   = torch.tensor([0], dtype=torch.int64)                 # placeholder
     kv_vis_ex = torch.ones(1, args.cache_T+1, dtype=torch.bool)
     # print(f"DEBUG: kv_examples (for decode export) shape: {kv_examples[0].shape}") # For debugging
     ep2 = texport(decode, (token_ex, past_ex, kv_vis_ex, *kv_examples))

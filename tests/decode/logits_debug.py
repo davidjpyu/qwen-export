@@ -4,7 +4,7 @@
 Utility script to inspect ExecuTorch vs HF prefill logits pairs.
 Given two .npy files (et_logits0.npy / hf_logits0.npy by default),
 it reports basic error metrics and decodes the tokens with the largest
-absolute differences so we know哪些 token 在“出格”。
+absolute differences so we know which IDs deviate the most.
 """
 
 import argparse
